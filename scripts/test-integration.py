@@ -571,7 +571,7 @@ def run_template_lms_checks(lmoci_bin, directory):
     ).stdout
     schema_path = ROOT / '.cache' / 'lmoci-schema.json'
     schema_path.parent.mkdir(parents=True, exist_ok=True)
-    schema_path.write_text(schema_out, encoding='utf-8')
+    schema_path.write_text(schema_out.replace('\r\n', '\n'), encoding='utf-8', newline='\n')
 
     tmpl_dir = directory / 'lms-templates'
     tmpl_dir.mkdir(exist_ok=True)
