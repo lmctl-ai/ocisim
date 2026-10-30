@@ -4,9 +4,10 @@ import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.annotations.QuarkusMain;
 
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 
-/** The only overlay on upstream: argument handling before Quarkus starts. */
+/** CLI and configuration overlay on upstream floci-oci before Quarkus starts. */
 @QuarkusMain
 public final class Main {
     private Main() {}
@@ -19,10 +20,11 @@ public final class Main {
         if (args.length == 1 && (args[0].equals("--help") || args[0].equals("-h"))) {
             System.out.println("""
                 ocisim: local OCI emulator, powered by floci-oci
-                Usage: ocisim serve|start [--port 4599] [--data-dir PATH]
+                Usage: ocisim serve|start [--port 4599] [--data-dir PATH] [--auth open|enforce] [--auth-config FILE]
                        ocisim --version | --help
                 Listens on 127.0.0.1. Foreground; Ctrl-C stops the server.
                 Default storage is memory. --data-dir enables persistent storage.
+                Default auth mode is open. --auth enforce verifies OCI HTTP signatures and IAM policies.
                 Health: http://127.0.0.1:4599/_floci-oci/health
                 Default tenancy: ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000
                 Default namespace: floci-local; region: us-ashburn-1
@@ -50,9 +52,13 @@ public final class Main {
         if (args.length == 0 || !(args[0].equals("serve") || args[0].equals("start"))) {
             throw new IllegalArgumentException("expected serve or start; use --help");
         }
+        String authMode = firstEnv("OCISIM_AUTH", "SIM_AUTH", "open");
+        String authFile = firstEnv("OCISIM_AUTH_CONFIG", "SIM_AUTH_CONFIG", null);
         int port = 4599;
         String directory = null;
         boolean portSeen = false;
+        boolean authSeen = false;
+        boolean authConfigSeen = false;
         for (int i = 1; i < args.length; i++) {
             String option = args[i];
             if (++i == args.length) {
@@ -77,11 +83,30 @@ public final class Main {
                     if (directory != null || args[i].isBlank()) {
                         throw new IllegalArgumentException("--data-dir requires one nonempty path");
                     }
-                    directory = Path.of(args[i]).toAbsolutePath().normalize().toString();
+                    try {
+                        directory = Path.of(args[i]).toAbsolutePath().normalize().toString();
+                    } catch (InvalidPathException e) {
+                        throw new IllegalArgumentException("invalid data directory path");
+                    }
+                }
+                case "--auth" -> {
+                    if (authSeen) {
+                        throw new IllegalArgumentException("duplicate --auth");
+                    }
+                    authSeen = true;
+                    authMode = args[i];
+                }
+                case "--auth-config" -> {
+                    if (authConfigSeen) {
+                        throw new IllegalArgumentException("duplicate --auth-config");
+                    }
+                    authConfigSeen = true;
+                    authFile = args[i];
                 }
                 default -> throw new IllegalArgumentException("unknown option; use --help");
             }
         }
+        AuthConfig.configure(authMode, authFile);
         System.setProperty("quarkus.http.host", "127.0.0.1");
         System.setProperty("quarkus.http.port", Integer.toString(port));
         System.setProperty("floci-oci.port", Integer.toString(port));
@@ -106,6 +131,18 @@ public final class Main {
                 && !Files.exists(Path.of("/var/run/docker.sock"))) {
             System.setProperty("floci-oci.docker.docker-host", "tcp://127.0.0.1:2375");
         }
+    }
+
+    private static String firstEnv(String primary, String secondary, String fallback) {
+        String val = System.getenv(primary);
+        if (val != null && !val.isBlank()) {
+            return val.trim();
+        }
+        val = System.getenv(secondary);
+        if (val != null && !val.isBlank()) {
+            return val.trim();
+        }
+        return fallback;
     }
 
     private static void failure(String kind, String message, int code) {

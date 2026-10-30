@@ -38,6 +38,7 @@ if not source.exists():
         tar.extractall(source.parent, filter='data')
     (source.parent / f"floci-oci-{lock['commit']}").rename(source)
 
+shutil.rmtree(source / 'src/main/java/ai/lmctl/ocisim', ignore_errors=True)
 for path in (ROOT / 'src').rglob('*.java'):
     target = source / path.relative_to(ROOT)
     target.parent.mkdir(parents=True, exist_ok=True)
