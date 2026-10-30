@@ -500,6 +500,134 @@ def run_lmoci_roundtrip(lmoci_bin, directory, cred_env=None, prefix='open'):
     invoke_lmoci(lmoci_bin, directory, ['queue', 'delete', q_id], cred_env=cred_env)
 
 
+def resolve_lmscript():
+    candidates = [
+        os.environ.get('LMSCRIPT_BIN', ''),
+        str(Path.home() / 'lmctl-mono' / 'bin' / 'lmscript'),
+        shutil.which('lmscript-mono') or '',
+        shutil.which('lmscript.cmd' if os.name == 'nt' else 'lmscript') or '',
+        shutil.which('lmscript') or '',
+    ]
+    for c in candidates:
+        if c and Path(c).is_file():
+            return str(Path(c).resolve())
+    return None
+
+
+@contextmanager
+def running_server_on_port(target_port, directory, persistent=False, subcommand='serve', extra_args=None, extra_env=None):
+    target_endpoint = f'http://127.0.0.1:{target_port}'
+    log_path = directory / f'server-{subcommand}-{target_port}-{int(time.time() * 1000)}.log'
+    with log_path.open('w+', encoding='utf-8', errors='replace') as log:
+        args = COMMAND + [subcommand, '--port', str(target_port)]
+        if persistent:
+            args += ['--data-dir', str(directory / f'state-{target_port}')]
+        if extra_args:
+            args += list(extra_args)
+        run_env = dict(ENV)
+        if extra_env:
+            run_env.update(extra_env)
+        server = subprocess.Popen(args, env=run_env, cwd=directory, stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 90
+            while True:
+                assert server.poll() is None, 'server exited before readiness'
+                try:
+                    with opener.open(target_endpoint + '/_floci-oci/health', timeout=1) as resp:
+                        if resp.status == 200:
+                            break
+                except (OSError, TimeoutError):
+                    pass
+                assert time.monotonic() < deadline, 'readiness timeout'
+                time.sleep(0.2)
+            yield server
+        except BaseException:
+            log.flush()
+            print(log_path.read_text(encoding='utf-8', errors='replace'), file=sys.stderr)
+            raise
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait()
+
+
+def run_template_lms_checks(lmoci_bin, directory):
+    lmscript_bin = resolve_lmscript()
+    if not lmscript_bin:
+        if os.environ.get('LMSCRIPT_REQUIRED') == '1':
+            raise AssertionError('lmscript binary is required when LMSCRIPT_REQUIRED=1')
+        return None
+
+    schema_out = subprocess.run(
+        [lmoci_bin, '--dsl-schema', '--json'],
+        env=ENV,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    schema_path = ROOT / '.cache' / 'lmoci-schema.json'
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(schema_out, encoding='utf-8')
+
+    tmpl_dir = directory / 'lms-templates'
+    tmpl_dir.mkdir(exist_ok=True)
+    generate_rsa_keypair(tmpl_dir, 'admin')
+    generate_rsa_keypair(tmpl_dir, 'reader')
+    generate_rsa_keypair(tmpl_dir, 'wrong')
+
+    with socket.socket() as s2:
+        s2.bind(('127.0.0.1', 0))
+        open_p = port
+        enforce_p = s2.getsockname()[1]
+
+    lms_file = str(ROOT / 'examples' / 'templates.lms')
+    lms_cmd_prefix = ['cmd.exe', '/c', lmscript_bin] if lmscript_bin.lower().endswith('.cmd') else [lmscript_bin]
+    lms_env = {
+        **ENV,
+        'HOME': str(tmpl_dir),
+        'USERPROFILE': str(tmpl_dir),
+    }
+
+    # Phase 1: generate templated-auth-config.json from _json_ block in templates.lms
+    prep = subprocess.run(
+        lms_cmd_prefix + ['--no-preflight', lms_file, 'prepare-auth', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
+        env=lms_env,
+        cwd=tmpl_dir,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert prep.returncode == 0, (prep.returncode, prep.stdout, prep.stderr)
+    prep_info = json.loads(prep.stdout.strip().splitlines()[-1])
+    auth_cfg_file = Path(prep_info['auth_config'])
+    assert auth_cfg_file.is_file(), auth_cfg_file
+
+    # Phase 2: run full template-driven open + enforce mode scenario against running ocisim servers
+    with running_server_on_port(
+        enforce_p,
+        tmpl_dir,
+        persistent=False,
+        subcommand='serve',
+        extra_args=['--auth', 'enforce', '--auth-config', str(auth_cfg_file)],
+    ):
+        full = subprocess.run(
+            lms_cmd_prefix + ['--no-preflight', lms_file, 'full', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
+            env=lms_env,
+            cwd=tmpl_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert full.returncode == 0, (full.returncode, full.stdout, full.stderr)
+        summary = json.loads(full.stdout.strip().splitlines()[-1])
+        assert summary.get('ok') is True and summary.get('quote_unicode_verified') is True, summary
+    return Path(lmscript_bin).name
+
+
 lmoci_bin = ensure_lmoci_binary()
 checks.append(f'pinned lmoci {LMOCI_VERSION} SHA-256 verified ({Path(lmoci_bin).name})')
 
@@ -648,6 +776,9 @@ with tempfile.TemporaryDirectory(prefix='ocisim-test-') as tmp:
         # 7. Open-mode lmoci round trip (and optional oci-cli when installed)
         run_lmoci_roundtrip(lmoci_bin, directory, cred_env=None, prefix='open')
         checks.append('lmoci open-mode full round trip (OS, IAM, Queue)')
+        lms_used = run_template_lms_checks(lmoci_bin, directory)
+        if lms_used:
+            checks.append(f'examples/templates.lms _json_ + expand() open & enforce round trip ({lms_used})')
         if run_oci_cli_checks(directory):
             checks.append('oci-cli bucket/object/iam round trip')
 

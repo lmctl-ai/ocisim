@@ -99,6 +99,32 @@ lmoci os put-object app-data hello.txt --content "signed payload" --endpoint htt
 lmoci os delete-bucket app-data --endpoint http://127.0.0.1:4599
 ```
 
+## Template-Driven `.lms` Integration (`examples/templates.lms`)
+
+[`examples/templates.lms`](examples/templates.lms) demonstrates template-driven
+`lmscript` + `lmoci` integration against `ocisim` in both `--auth open` and
+`--auth enforce` modes:
+
+- **JSON templates (`_json_` blocks)**:
+  - Authors the `--auth-config` JSON document (`credentials`, `groups`,
+    `statements`, `policy.Statement`) with typed context variables (`${expr}`
+    standalone for arrays/objects/numbers, `${expr}` inside strings with
+    automatic JSON string escaping) and writes it via `write_json(...)`.
+  - Authors structured Object Storage and Queue event JSON payloads containing
+    quotes (`"`) and Unicode (`"OCI \"Quoted\" Pipeline — 雪 / 🚀"`).
+- **Non-JSON text templates (`expand()`)**:
+  - Expands URLs, Object Storage hierarchy keys (`tenants/${tenant_slug}/...`),
+    OCI `keyId`s (`${tenancy_id}/${user_id}/${fingerprint}`), and OCI IAM policy
+    statements (`Allow group ${writer_group} to manage ...`).
+- **Typed `_dsl_` + CLI verification**:
+  - Compiles and executes an embedded `_dsl_` program via `lmoci --dsl` driving
+    5 representative OCI workflows (IAM compartment + policy analysis, bucket
+    creation, JSON object put/get/list/rename, Queue message put/receive/delete,
+    and run ledger cleanup).
+  - Exercises both `--auth open` and `--auth enforce`, verifying allowed writes,
+    allowed reads, `403 NotAuthorizedOrNotFound` policy denials, and `401
+    NotAuthenticated` signature failures.
+
 ## Build and test
 
 Requires Python 3.12+, Maven 3.9+, and GraalVM JDK 25 (`native-image` on `PATH`).

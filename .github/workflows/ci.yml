@@ -52,9 +52,16 @@ jobs:
       - name: Install OCI CLI on Linux
         if: runner.os == 'Linux'
         run: python -m pip install --quiet oci-cli==3.89.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Install pinned lmscript compiler
+        run: npm install -g @lmctl-ai/lmctl@0.2.446
       - name: Build native executable from verified source
         run: python scripts/build.py --native
-      - name: Verify CLI, OCI service lifecycles, auth/IAM policies, and lmoci integration
+      - name: Verify CLI, OCI service lifecycles, auth/IAM policies, lmoci, and templates.lms integration
+        env:
+          LMSCRIPT_REQUIRED: '1'
         run: |
           python scripts/test-cli.py "$PWD/dist/ocisim${{ matrix.ext }}"
           python scripts/test-integration.py "$PWD/dist/ocisim${{ matrix.ext }}"

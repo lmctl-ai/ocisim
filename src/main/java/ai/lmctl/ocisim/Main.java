@@ -1,15 +1,28 @@
 package ai.lmctl.ocisim;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.annotations.QuarkusMain;
 
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.Map;
 
 /** CLI and configuration overlay on upstream floci-oci before Quarkus starts. */
 @QuarkusMain
 public final class Main {
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final String CLI_ERROR_TEMPLATE = """
+            {
+              "ok": false,
+              "error": {
+                "kind": ${kind},
+                "message": ${message}
+              }
+            }
+            """;
+
     private Main() {}
 
     public static void main(String[] args) {
@@ -145,10 +158,22 @@ public final class Main {
         return fallback;
     }
 
+    static String renderJsonTemplate(String template, Map<String, String> values) {
+        try {
+            String rendered = template;
+            for (Map.Entry<String, String> entry : values.entrySet()) {
+                String jsonLiteral = JSON_MAPPER.writeValueAsString(entry.getValue());
+                rendered = rendered.replace("${" + entry.getKey() + "}", jsonLiteral);
+            }
+            return rendered.replaceAll("\\s*\\n\\s*", "");
+        } catch (Exception e) {
+            return "{\"ok\":false,\"error\":{\"kind\":\"runtime\",\"message\":\"template error\"}}";
+        }
+    }
+
     private static void failure(String kind, String message, int code) {
-        // Messages are fixed strings, never arbitrary exception text or credentials.
-        System.out.println("{\"ok\":false,\"error\":{\"kind\":\"" + kind
-                + "\",\"message\":\"" + message + "\"}}");
+        // Messages are fixed strings rendered through a JSON-escaping text block template.
+        System.out.println(renderJsonTemplate(CLI_ERROR_TEMPLATE, Map.of("kind", kind, "message", message)));
         System.exit(code);
     }
 }

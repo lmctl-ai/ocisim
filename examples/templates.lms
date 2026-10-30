@@ -1,0 +1,279 @@
+# Wave 12 template-driven integration for ocisim + lmoci.
+# Demonstrates:
+#   1. _json_ template blocks (multi-line, comments, standalone typed values, in-string quote/unicode interpolation)
+#   2. expand() for non-JSON text (URLs, Object Storage keys, OCI keyIds, OCI IAM policy statements)
+#   3. _dsl_ compilation and execution against lmoci in both open mode and enforce mode
+
+mode = coalesce(ARGV[0], "full");
+work_dir = coalesce(ARGV[1], ".");
+lmoci_bin = coalesce(ARGV[2], "lmoci");
+open_port = coalesce(ARGV[3], "4599");
+enforce_port = coalesce(ARGV[4], "4600");
+
+tenancy_id = "ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000";
+admin_user = "ocid1.user.oc1..templateadmin000000000000000000000000000000000000000000";
+reader_user = "ocid1.user.oc1..templatereader00000000000000000000000000000000000000000";
+admin_fp = "aa:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:01";
+reader_fp = "bb:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:02";
+
+admin_group = "TemplateAdmins";
+reader_group = "TemplateReaders";
+bucket_name = "ocisim-templated-bkt";
+env_name = "staging";
+service_name = "billing";
+batch_count = 3;
+tags = ["templated", "wave12", "oci-sim"];
+pipeline_quote = "OCI \"Quoted\" Pipeline — 雪 / 🚀";
+
+# Non-JSON text templates via expand(): URLs, object paths, keyIds, and OCI IAM policy statements.
+open_endpoint = expand("http://127.0.0.1:${port}", {port: open_port});
+enforce_endpoint = expand("http://127.0.0.1:${port}", {port: enforce_port});
+admin_key_id = expand("${tenancy}/${user}/${fp}", {tenancy: tenancy_id, user: admin_user, fp: admin_fp});
+reader_key_id = expand("${tenancy}/${user}/${fp}", {tenancy: tenancy_id, user: reader_user, fp: reader_fp});
+
+config_key = expand("tenants/${env}/${svc}/config-v${ver}.json", {env: env_name, svc: service_name, ver: "1"});
+manifest_key = expand("tenants/${env}/${svc}/manifest-v${ver}.json", {env: env_name, svc: service_name, ver: "1"});
+renamed_manifest_key = expand("tenants/${env}/${svc}/manifest-final-v${ver}.json", {env: env_name, svc: service_name, ver: "1"});
+bucket_resource_glob = expand("bucket:${bkt}", {bkt: bucket_name});
+object_resource_glob = expand("bucket:${bkt}/object:tenants/${env}/*", {bkt: bucket_name, env: env_name});
+
+oci_admin_stmt = expand("Allow group ${grp} to manage all-resources in tenancy", {grp: admin_group});
+oci_reader_stmt = expand(
+  "Allow group ${grp} to read object-family in tenancy where target.bucket.name = '${bkt}'",
+  {grp: reader_group, bkt: bucket_name}
+);
+
+admin_pub_path = path_join(work_dir, "admin-public.pem");
+admin_priv_path = path_join(work_dir, "admin-private.pem");
+reader_pub_path = path_join(work_dir, "reader-public.pem");
+reader_priv_path = path_join(work_dir, "reader-private.pem");
+wrong_priv_path = path_join(work_dir, "wrong-private.pem");
+auth_config_path = path_join(work_dir, "templated-auth-config.json");
+
+admin_pub_pem = if_else(file_exists(admin_pub_path), trim(read_file(admin_pub_path)), "PUBLIC_KEY_PLACEHOLDER");
+reader_pub_pem = if_else(file_exists(reader_pub_path), trim(read_file(reader_pub_path)), "PUBLIC_KEY_PLACEHOLDER");
+
+reader_allowed_actions = ["oci:os:Get*", "oci:os:Head*", "oci:os:List*"];
+reader_allowed_resources = ["namespace:*", bucket_resource_glob, object_resource_glob];
+
+# A. Permission/policy JSON authored with a _json_ template block and written to ocisim's --auth-config file.
+# Multi-line _json_ block for ocisim --auth-config (no manual string escaping needed)
+auth_config = _json_;
+{
+  "credentials": [
+    {
+      "keyId": ${admin_key_id},
+      "publicKeyPem": ${admin_pub_pem},
+      "groups": [${admin_group}],
+      "statements": [
+        ${oci_admin_stmt}
+      ]
+    },
+    {
+      "keyId": ${reader_key_id},
+      "publicKeyPem": ${reader_pub_pem},
+      "groups": [${reader_group}],
+      "statements": [
+        ${oci_reader_stmt}
+      ],
+      "policy": {
+        "Version": "2026-01-01",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ${reader_allowed_actions},
+            "Resource": ${reader_allowed_resources}
+          }
+        ]
+      }
+    }
+  ]
+}
+end _json_
+
+write_json(auth_config_path, auth_config, 2);
+assert(file_exists(auth_config_path), "auth_config file must be written");
+
+if (mode == "prepare-auth") {
+  println(json_stringify({ok: true, phase: "prepare-auth", auth_config: auth_config_path}));
+  exit(0);
+}
+
+# JSON request payload templates authored with _json_ blocks:
+freeform_tags = _json_;
+{
+  "environment": ${env_name},
+  "service": ${service_name},
+  "managedBy": "lmscript-wave12"
+}
+end _json_
+
+# 1. Object Storage config payload with standalone typed values + in-string quote/unicode interpolation
+# Quotes and Unicode inside ${pipeline_quote} are auto-escaped safely by _json_
+config_payload = _json_;
+{
+  "bucket": ${bucket_name},
+  "compartmentId": ${tenancy_id},
+  "count": ${batch_count},
+  "tags": ${tags},
+  "freeformTags": ${freeform_tags},
+  "note": "created by ${pipeline_quote} for ${service_name}"
+}
+end _json_
+
+# 2. Object Storage artifact manifest payload
+manifest_payload = _json_;
+{
+  "schemaVersion": 2,
+  "primaryConfigKey": ${config_key},
+  "expectedCount": ${batch_count},
+  "artifacts": [
+    {
+      "key": ${config_key},
+      "stage": ${env_name},
+      "label": "manifest for ${pipeline_quote}"
+    }
+  ]
+}
+end _json_
+
+# 3. OCI Queue event notification payload
+queue_event_payload = _json_;
+{
+  "eventType": "com.oraclecloud.objectstorage.createobject",
+  "bucketName": ${bucket_name},
+  "objectKey": ${config_key},
+  "batchCount": ${batch_count},
+  "tags": ${tags},
+  "summary": "queued event from ${pipeline_quote}"
+}
+end _json_
+
+config_json_text = json_stringify(config_payload);
+manifest_json_text = json_stringify(manifest_payload);
+queue_event_text = json_stringify(queue_event_payload);
+
+# Compile and run a typed lmoci DSL program driving 5 representative API calls against open-mode ocisim:
+#   (1) bucket_create + object_put (config_payload)
+#   (2) object_put (manifest_payload) + object_rename
+#   (3) object_get + object_list
+#   (4) queue creation + queue_put + queue_receive + queue_delete_message
+#   (5) iam compartment creation + analyze_policy + cleanup
+dslb_path = path_join(work_dir, "templates-open.dslb");
+oci_prog = _dsl_ schema="../.cache/lmoci-schema.json";
+let cloud = oci.endpoint("us-ashburn-1", ${open_endpoint});
+check(!cloud.is_demo());
+let ns = cloud.namespace();
+check(ns == "floci-local");
+
+let run = cloud.run("w12tmpl", "ledgers");
+let comp = run.compartment("stagecomp");
+check(comp.get("status") == "ACTIVE");
+
+let pol_check = cloud.analyze_policy(${oci_reader_stmt});
+check(pol_check.get("risk_level") == "LOW");
+check(pol_check.number("statement_count") == 1);
+
+let b = cloud.bucket_create(${bucket_name});
+check(b.get("bucket") == ${bucket_name});
+
+let put_cfg = cloud.object_put(${bucket_name}, ${config_key}, ${config_json_text});
+check(put_cfg.number("content_length") > 20);
+
+let put_man = cloud.object_put(${bucket_name}, ${manifest_key}, ${manifest_json_text});
+check(put_man.number("content_length") > 20);
+
+let ren_man = cloud.object_rename(${bucket_name}, ${manifest_key}, ${renamed_manifest_key});
+check(ren_man.get("renamed") == "true");
+
+let listed = cloud.object_list(${bucket_name}, "tenants/");
+check(listed.len() == 2);
+
+let got_cfg = cloud.object_get(${bucket_name}, ${config_key});
+check(got_cfg.get("content") == ${config_json_text});
+
+let q = run.queue("events");
+let qid = q.get("id");
+let q_put = cloud.queue_put(qid, ${queue_event_text});
+check(q_put.number("message_count") == 1);
+let q_msgs = cloud.queue_receive(qid);
+check(q_msgs.len() == 1);
+let first_msg = q_msgs.at(0);
+check(first_msg.get("content") == ${queue_event_text});
+let q_ack = cloud.queue_delete_message(qid, first_msg.get("receipt"));
+check(q_ack.get("deleted") == "true");
+
+run.cleanup();
+check(run.remaining() == 0);
+end _dsl_
+savedsl(oci_prog, dslb_path);
+
+open_dsl_run = system([lmoci_bin, "--dsl", dslb_path, "--endpoint", open_endpoint]);
+assert(open_dsl_run.code == 0, "open-mode lmoci DSL execution failed: " + open_dsl_run.stderr);
+
+# Verify the stored JSON object from open-mode ocisim via lmoci CLI and assert parsed fields
+open_get = system([lmoci_bin, "os", "get-object", bucket_name, config_key, "--endpoint", open_endpoint]);
+assert(open_get.code == 0, "open-mode get-object failed");
+open_env = json_parse(open_get.stdout);
+assert(getbool(open_env, "ok") == true, "open-mode envelope must have ok=true");
+stored_cfg = json_parse(getstr(open_env, "result.content"));
+assert(getnum(stored_cfg, "count") == batch_count, "stored count mismatch");
+assert(getstr(stored_cfg, "freeformTags.environment") == env_name, "stored tag mismatch");
+assert(contains(getstr(stored_cfg, "note"), pipeline_quote), "stored note must preserve quotes and unicode");
+
+# Clean up open-mode bucket objects
+assert(system([lmoci_bin, "os", "delete-object", bucket_name, config_key, "--endpoint", open_endpoint]).code == 0);
+assert(system([lmoci_bin, "os", "delete-object", bucket_name, renamed_manifest_key, "--endpoint", open_endpoint]).code == 0);
+assert(system([lmoci_bin, "os", "delete-bucket", bucket_name, "--endpoint", open_endpoint]).code == 0);
+
+# Enforce-mode verification using the _json_-authored auth_config:
+# 1. Seed bucket + templated config object as TemplateAdmins
+set_env("LMOCI_TENANCY", tenancy_id);
+set_env("LMOCI_USER", admin_user);
+set_env("LMOCI_FINGERPRINT", admin_fp);
+set_env("LMOCI_PRIVATE_KEY_FILE", admin_priv_path);
+
+enf_create = system([lmoci_bin, "os", "create-bucket", bucket_name, "--endpoint", enforce_endpoint]);
+assert(enf_create.code == 0, "enforce-mode admin create-bucket failed: " + enf_create.stdout);
+
+enf_put = system([lmoci_bin, "os", "put-object", bucket_name, config_key, "--content", config_json_text, "--endpoint", enforce_endpoint]);
+assert(enf_put.code == 0, "enforce-mode admin put-object failed: " + enf_put.stdout);
+
+# 2. Switch to TemplateReaders: allowed call (get-object on templated key) must succeed
+set_env("LMOCI_USER", reader_user);
+set_env("LMOCI_FINGERPRINT", reader_fp);
+set_env("LMOCI_PRIVATE_KEY_FILE", reader_priv_path);
+
+enf_get = system([lmoci_bin, "os", "get-object", bucket_name, config_key, "--endpoint", enforce_endpoint]);
+assert(enf_get.code == 0, "enforce-mode reader allowed get-object failed: " + enf_get.stdout);
+enf_get_env = json_parse(enf_get.stdout);
+assert(getbool(enf_get_env, "ok") == true, "enforce-mode reader get-object ok must be true");
+enf_stored_cfg = json_parse(getstr(enf_get_env, "result.content"));
+assert(contains(getstr(enf_stored_cfg, "note"), pipeline_quote), "enforce-mode stored note must preserve quotes and unicode");
+
+# 3. Denied call (Layer 2 AuthZ): TemplateReaders attempting put-object must fail with HTTP 403 NotAuthorizedOrNotFound
+enf_denied_put = system([lmoci_bin, "os", "put-object", bucket_name, manifest_key, "--content", manifest_json_text, "--endpoint", enforce_endpoint]);
+assert(enf_denied_put.code == 3, "enforce-mode reader put-object must exit with code 3");
+enf_denied_env = json_parse(enf_denied_put.stdout);
+assert(getbool(enf_denied_env, "ok") == false, "denied response must have ok=false");
+assert(contains(getstr(enf_denied_env, "error.message"), "HTTP 403"), "denied error must report HTTP 403");
+assert(contains(getstr(enf_denied_env, "error.message"), "NotAuthorizedOrNotFound"), "denied error must report NotAuthorizedOrNotFound");
+
+# 4. Denied call (Layer 1 AuthN): wrong RSA private key must fail with HTTP 401 NotAuthenticated
+set_env("LMOCI_PRIVATE_KEY_FILE", wrong_priv_path);
+enf_unauth = system([lmoci_bin, "os", "namespace", "--endpoint", enforce_endpoint]);
+assert(enf_unauth.code == 3, "enforce-mode wrong key must exit with code 3");
+enf_unauth_env = json_parse(enf_unauth.stdout);
+assert(getbool(enf_unauth_env, "ok") == false, "unauthenticated response must have ok=false");
+assert(contains(getstr(enf_unauth_env, "error.message"), "HTTP 401"), "unauthenticated error must report HTTP 401");
+assert(contains(getstr(enf_unauth_env, "error.message"), "NotAuthenticated"), "unauthenticated error must report NotAuthenticated");
+
+println(json_stringify({
+  ok: true,
+  open_endpoint: open_endpoint,
+  enforce_endpoint: enforce_endpoint,
+  templated_bucket: bucket_name,
+  templated_config_key: config_key,
+  templated_manifest_key: renamed_manifest_key,
+  quote_unicode_verified: true
+}));

@@ -1,7 +1,6 @@
 package ai.lmctl.ocisim;
 
 import io.floci.oci.core.auth.OciSignatureParser;
-import io.floci.oci.core.common.OciErrorResponse;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.Priorities;
@@ -38,6 +37,12 @@ public class OciAuthFilter implements ContainerRequestFilter {
             "The required information to complete authentication was not provided or was incorrect.";
     private static final String NOT_AUTHORIZED_MSG =
             "Authorization failed or requested resource not found.";
+    private static final String OCI_ERROR_TEMPLATE = """
+            {
+              "code": ${code},
+              "message": ${message}
+            }
+            """;
 
     @Override
     public void filter(ContainerRequestContext ctx) {
@@ -198,16 +203,18 @@ public class OciAuthFilter implements ContainerRequestFilter {
     }
 
     private static void rejectNotAuthenticated(ContainerRequestContext ctx) {
-        ctx.abortWith(Response.status(401)
-                .type(MediaType.APPLICATION_JSON)
-                .entity(new OciErrorResponse("NotAuthenticated", NOT_AUTHENTICATED_MSG))
-                .build());
+        reject(ctx, 401, "NotAuthenticated", NOT_AUTHENTICATED_MSG);
     }
 
     private static void rejectNotAuthorized(ContainerRequestContext ctx) {
-        ctx.abortWith(Response.status(403)
+        reject(ctx, 403, "NotAuthorizedOrNotFound", NOT_AUTHORIZED_MSG);
+    }
+
+    private static void reject(ContainerRequestContext ctx, int status, String code, String message) {
+        String body = Main.renderJsonTemplate(OCI_ERROR_TEMPLATE, Map.of("code", code, "message", message));
+        ctx.abortWith(Response.status(status)
                 .type(MediaType.APPLICATION_JSON)
-                .entity(new OciErrorResponse("NotAuthorizedOrNotFound", NOT_AUTHORIZED_MSG))
+                .entity(body)
                 .build());
     }
 }
