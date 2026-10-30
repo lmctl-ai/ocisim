@@ -73,7 +73,16 @@ process on an OS-assigned loopback port. It verifies:
 ### Client handoff (`lmoci`)
 
 `lmoci` (`github.com/lmctl-ai/lmoci`) is the sibling native OCI SDK client for
-`lmscript`. Point `lmoci` (or any OCI SDK/CLI) at `http://127.0.0.1:4599` with:
+`lmscript`. Point `lmoci` (or any OCI SDK/CLI) at `http://127.0.0.1:4599`:
+
+```sh
+lmoci os namespace --endpoint http://127.0.0.1:4599
+lmoci os create-bucket demo-bucket --endpoint http://127.0.0.1:4599
+lmoci os put-object demo-bucket hello.txt --content "hello from lmoci" --endpoint http://127.0.0.1:4599
+lmoci os get-object demo-bucket hello.txt --endpoint http://127.0.0.1:4599
+```
+
+Default emulator identity:
 - Default tenancy OCID: `ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000`
 - Default user OCID: `ocid1.user.oc1..flocilocaluser00000000000000000000000000000000000000000000`
 - Default namespace: `floci-local`

@@ -189,6 +189,45 @@ def run_oci_cli_checks(directory):
     return True
 
 
+def run_lmoci_checks(directory):
+    candidates = [
+        os.environ.get('LMOCI_BIN', ''),
+        shutil.which('lmoci') or '',
+        str(ROOT.parent / 'lmoci' / 'target' / 'lmoci'),
+        str(ROOT.parent / 'lmoci' / 'target' / 'lmoci-0.1.0-all.jar'),
+    ]
+    lmoci_target = next((c for c in candidates if c and Path(c).is_file()), None)
+    if not lmoci_target:
+        return False
+    cmd_prefix = ['java', '-jar', lmoci_target] if lmoci_target.endswith('.jar') else [lmoci_target]
+    lmoci_env = {**ENV, 'LMOCI_ENDPOINT': endpoint}
+
+    def lmoci(*args):
+        p = subprocess.run(
+            cmd_prefix + list(args) + ['--endpoint', endpoint],
+            env=lmoci_env,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert p.returncode == 0, (args, p.returncode, p.stdout, p.stderr)
+        payload = json.loads(p.stdout)
+        assert payload.get('ok') is True, payload
+        return payload['result']
+
+    assert lmoci('os', 'namespace')['namespace'] == 'floci-local'
+    bkt = 'lmoci-ocisim-roundtrip'
+    lmoci('os', 'create-bucket', bkt)
+    assert lmoci('os', 'head-bucket', bkt)['exists'] is True
+    assert lmoci('os', 'put-object', bkt, 'hello/world.txt', '--content', 'ocisim-live-payload')['content_length'] == 19
+    assert lmoci('os', 'get-object', bkt, 'hello/world.txt')['content'] == 'ocisim-live-payload'
+    assert lmoci('os', 'list-objects', bkt, 'hello/')['count'] == 1
+    lmoci('os', 'delete-object', bkt, 'hello/world.txt')
+    lmoci('os', 'delete-bucket', bkt)
+    return True
+
+
 with tempfile.TemporaryDirectory(prefix='ocisim-test-') as tmp:
     directory = Path(tmp)
     with running_server(directory, persistent=True, subcommand='serve'):
@@ -331,9 +370,11 @@ with tempfile.TemporaryDirectory(prefix='ocisim-test-') as tmp:
         request('DELETE', f'/20210201/queues/{queue_id}', status=202)
         checks.append('Queue create/put/get/delete message/delete queue')
 
-        # 7. Optional official oci-cli round trip when oci is installed
+        # 7. Optional official oci-cli and lmoci round trips when installed/available
         if run_oci_cli_checks(directory):
             checks.append('oci-cli bucket/object/iam round trip')
+        if run_lmoci_checks(directory):
+            checks.append('lmoci SDK client bucket/object round trip')
 
     # 8. Restart with `start` alias and `--data-dir` persistence, then clean up
     with running_server(directory, persistent=True, subcommand='start'):
