@@ -208,7 +208,7 @@ check(run.remaining() == 0);
 end _dsl_
 savedsl(oci_prog, dslb_path);
 
-open_dsl_run = system([lmoci_bin, "--dsl", dslb_path, "--endpoint", open_endpoint]);
+open_dsl_run = system([lmoci_bin, "--lmcode", dslb_path, "--endpoint", open_endpoint]);
 assert(open_dsl_run.code == 0, "open-mode lmoci DSL execution failed: " + open_dsl_run.stderr);
 
 # Verify the stored JSON object from open-mode ocisim via lmoci CLI and assert parsed fields

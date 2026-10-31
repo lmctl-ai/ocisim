@@ -562,7 +562,7 @@ def run_template_lms_checks(lmoci_bin, directory):
         return None
 
     schema_out = subprocess.run(
-        [lmoci_bin, '--dsl-schema', '--json'],
+        [lmoci_bin, '--lmcode-schema', '--json'],
         env=ENV,
         capture_output=True,
         text=True,

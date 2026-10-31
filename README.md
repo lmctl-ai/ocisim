@@ -117,7 +117,7 @@ lmoci os delete-bucket app-data --endpoint http://127.0.0.1:4599
     OCI `keyId`s (`${tenancy_id}/${user_id}/${fingerprint}`), and OCI IAM policy
     statements (`Allow group ${writer_group} to manage ...`).
 - **Typed `_dsl_` + CLI verification**:
-  - Compiles and executes an embedded `_dsl_` program via `lmoci --dsl` driving
+  - Compiles and executes an embedded `_dsl_` program via `lmoci --lmcode` driving
     5 representative OCI workflows (IAM compartment + policy analysis, bucket
     creation, JSON object put/get/list/rename, Queue message put/receive/delete,
     and run ledger cleanup).
