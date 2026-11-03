@@ -2,7 +2,7 @@
 # Demonstrates:
 #   1. _json_ template blocks (multi-line, comments, standalone typed values, in-string quote/unicode interpolation)
 #   2. expand() for non-JSON text (URLs, Object Storage keys, OCI keyIds, OCI IAM policy statements)
-#   3. _dsl_ compilation and execution against lmoci in both open mode and enforce mode
+#   3. lmcode execution against a manifest-capable lmoci host in open and enforce modes
 
 mode = coalesce(ARGV[0], "full");
 work_dir = coalesce(ARGV[1], ".");
@@ -159,8 +159,7 @@ queue_event_text = json_stringify(queue_event_payload);
 #   (3) object_get + object_list
 #   (4) queue creation + queue_put + queue_receive + queue_delete_message
 #   (5) iam compartment creation + analyze_policy + cleanup
-dslb_path = path_join(work_dir, "templates-open.dslb");
-oci_prog = _dsl_ schema="../.cache/lmoci-schema.json";
+oci_prog = _lmcode_ schema="../.cache/lmoci-schema.json";
 let cloud = oci.endpoint("us-ashburn-1", ${open_endpoint});
 check(!cloud.is_demo());
 let ns = cloud.namespace();
@@ -205,11 +204,10 @@ check(q_ack.get("deleted") == "true");
 
 run.cleanup();
 check(run.remaining() == 0);
-end _dsl_
-savedsl(oci_prog, dslb_path);
+end _lmcode_
 
-open_dsl_run = system([lmoci_bin, "--lmcode", dslb_path, "--endpoint", open_endpoint]);
-assert(open_dsl_run.code == 0, "open-mode lmoci DSL execution failed: " + open_dsl_run.stderr);
+open_lmcode_run = run_lmcode(oci_prog, {command:[lmoci_bin, "--lmcode", "$DSLFILE", "--endpoint", open_endpoint]});
+assert(open_lmcode_run.ok, "open-mode lmoci lmcode execution failed: " + json_stringify(open_lmcode_run));
 
 # Verify the stored JSON object from open-mode ocisim via lmoci CLI and assert parsed fields
 open_get = system([lmoci_bin, "os", "get-object", bucket_name, config_key, "--endpoint", open_endpoint]);

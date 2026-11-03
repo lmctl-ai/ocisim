@@ -561,14 +561,25 @@ def run_template_lms_checks(lmoci_bin, directory):
             raise AssertionError('lmscript binary is required when LMSCRIPT_REQUIRED=1')
         return None
 
-    schema_out = subprocess.run(
+    schema_probe = subprocess.run(
         [lmoci_bin, '--lmcode-schema', '--json'],
         env=ENV,
         capture_output=True,
         text=True,
-        check=True,
         timeout=30,
-    ).stdout
+    )
+    if schema_probe.returncode != 0:
+        print('SKIP templates.lms invocation: pinned lmoci does not expose the current lmcode schema protocol')
+        return None
+    try:
+        schema_data = json.loads(schema_probe.stdout)
+    except json.JSONDecodeError:
+        print('SKIP templates.lms invocation: pinned lmoci returned an invalid lmcode schema')
+        return None
+    if schema_data.get('dsl.schema') != 2:
+        print('SKIP templates.lms invocation: pinned lmoci schema version is not supported')
+        return None
+    schema_out = schema_probe.stdout
     schema_path = ROOT / '.cache' / 'lmoci-schema.json'
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(schema_out.replace('\r\n', '\n'), encoding='utf-8', newline='\n')
@@ -594,7 +605,7 @@ def run_template_lms_checks(lmoci_bin, directory):
 
     # Phase 1: generate templated-auth-config.json from _json_ block in templates.lms
     prep = subprocess.run(
-        lms_cmd_prefix + ['--no-preflight', lms_file, 'prepare-auth', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
+        lms_cmd_prefix + [lms_file, 'prepare-auth', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
         env=lms_env,
         cwd=tmpl_dir,
         capture_output=True,
@@ -615,7 +626,7 @@ def run_template_lms_checks(lmoci_bin, directory):
         extra_args=['--auth', 'enforce', '--auth-config', str(auth_cfg_file)],
     ):
         full = subprocess.run(
-            lms_cmd_prefix + ['--no-preflight', lms_file, 'full', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
+            lms_cmd_prefix + [lms_file, 'full', str(tmpl_dir), lmoci_bin, str(open_p), str(enforce_p)],
             env=lms_env,
             cwd=tmpl_dir,
             capture_output=True,

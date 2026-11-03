@@ -55,8 +55,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
-      - name: Install pinned lmscript compiler
-        run: npm install -g @lmctl-ai/lmctl@0.2.446
+      - name: Install current lmscript compiler in a private prefix
+        run: |
+          npm install --prefix "$RUNNER_TEMP/compiler" --no-save --package-lock=false @lmctl-ai/lmctl@latest
+          echo "$RUNNER_TEMP/compiler/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Build native executable from verified source
         run: python scripts/build.py --native
       - name: Verify CLI, OCI service lifecycles, auth/IAM policies, lmoci, and templates.lms integration
