@@ -1,5 +1,7 @@
 # ocisim
 
+Documentation: [Quick reference](https://www.lmctl.com/tools/ocisim/) · [LLM skill](https://www.lmctl.com/tools/ocisim/skill.html) · [Guide](https://www.lmctl.com/tools/ocisim/guide.html) · [Reference](https://www.lmctl.com/tools/ocisim/reference.html)
+
 Local Oracle Cloud Infrastructure (OCI) emulator on `127.0.0.1:4599`, built on
 [floci-oci](https://github.com/floci-io/floci-oci). Packaged as one standalone
 native executable. Object Storage, Identity (IAM), Queue, Streaming, Vault, KMS,
